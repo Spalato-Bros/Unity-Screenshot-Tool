@@ -1,0 +1,16 @@
+{
+    "name": "SpalatoBros.ScreenshotTool.Editor",
+    "rootNamespace": "SpalatoBros.ScreenshotTool",
+    "references": [
+        "GUID:caca39f069f7a5c47957221c3e4e6ae1"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

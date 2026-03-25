@@ -1,0 +1,4 @@
+﻿<Solution>
+  <Project Path="SpalatoBros.ScreenshotTool.Runtime.csproj" />
+  <Project Path="SpalatoBros.ScreenshotTool.Editor.csproj" />
+</Solution>
