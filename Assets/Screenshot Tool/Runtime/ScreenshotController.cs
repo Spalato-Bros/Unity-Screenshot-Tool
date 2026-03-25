@@ -1,7 +1,9 @@
+using GluonGui.WorkspaceWindow.Views.WorkspaceExplorer;
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
@@ -23,19 +25,34 @@ namespace SpalatoBros.ScreenshotTool
 		[SerializeField] private ScreenshotConfig rawScreenshotAsTextureConfig1x;
 		[SerializeField] private ScreenshotConfig rawScreenshotAsTextureConfig2x;
 		[SerializeField] private ScreenshotConfig rawScreenshotAsTextureConfig4x;
-
+		[Space]
 		[SerializeField] private Texture2D rawScreenshotTex;
 		[SerializeField] private Texture2D screenshotTex;
 		[Tooltip("Use the Compress method when creating the resulting texture to reduce file size.")]
 		public bool compressScreenshotAsTexture;
 		public bool compressScreenshotAsTextureHighQuality;
-		private bool savingScreenshotAsTexture;
-		public bool SavingScreenshotAsTexture => savingScreenshotAsTexture;
+		private bool isSaving;
+		public bool SavingScreenshotAsTexture => isSaving;
 		private byte[] gammaLUT;
 		private byte[] linearLUT;
 
 		[Header("Individual camera rendering")]
+		[SerializeField] private ScreenshotConfig renderIndividualCamerasConfig1x;
+		[SerializeField] private ScreenshotConfig renderIndividualCamerasConfigFullHD;
+		[SerializeField] private ScreenshotConfig renderIndividualCamerasConfigUltraHD;
+		[SerializeField] private ScreenshotConfig renderIndividualCamerasConfigCustom;
+		[SerializeField] private ScreenshotConfig saveCameraRendersConfig1x;
+
 		[SerializeField] private List<Camera> cameraList;
+
+		[SerializeField] private List<Texture2D> renderedCameraTextures;
+
+		[SerializeField] private Vector2Int customCameraResolution = new(1920, 1080);
+		public Vector2Int CustomCameraResolution => customCameraResolution;
+
+		[SerializeField] private RenderTextureFormat defaultRenderTextureFormat = RenderTextureFormat.ARGB32;
+		[SerializeField] private TextureFormat defaultTextureFormat = TextureFormat.ARGB32;
+		[SerializeField] private bool linearTexture;
 
 		// Events.
 		public event Action<string> OnScreenshotTaken;
@@ -43,6 +60,7 @@ namespace SpalatoBros.ScreenshotTool
 		public event Action<Texture2D> OnScreenshotAsTextureTaken;
 		public event Action<string> OnScreenshotAsTextureSaved;
 		public event Action<Exception> OnSaveScreenshotAsTextureError;
+		public event Action<List<Texture2D>> OnCamerasRenderedToTexture;
 
 		private void Awake()
 		{
@@ -56,6 +74,7 @@ namespace SpalatoBros.ScreenshotTool
 
 			// Prepare individual camera list.
 			cameraList = new();
+			renderedCameraTextures = new();
 
 			// For saving files to directory.
 			screenshotsPath = Path.Combine(Application.persistentDataPath, "Screenshots");
@@ -81,6 +100,21 @@ namespace SpalatoBros.ScreenshotTool
 
 			rawScreenshotAsTextureConfig4x.screenshotAction.performed += TakeRawScreenshotAsTextureAction4xPerformed;
 			rawScreenshotAsTextureConfig4x.screenshotAction.Enable();
+
+			renderIndividualCamerasConfig1x.screenshotAction.performed += RenderIndividualCamera1xPerformed;
+			renderIndividualCamerasConfig1x.screenshotAction.Enable();
+
+			renderIndividualCamerasConfigFullHD.screenshotAction.performed += RenderIndividualCameraFullHDPerformed;
+			renderIndividualCamerasConfigFullHD.screenshotAction.Enable();
+
+			renderIndividualCamerasConfigUltraHD.screenshotAction.performed += RenderIndividualCameraUltraHDPerformed;
+			renderIndividualCamerasConfigUltraHD.screenshotAction.Enable();
+
+			renderIndividualCamerasConfigCustom.screenshotAction.performed += RenderIndividualCameraCustomPerformed;
+			renderIndividualCamerasConfigCustom.screenshotAction.Enable();
+
+			saveCameraRendersConfig1x.screenshotAction.performed += SaveCameraRenders1xPerformed;
+			saveCameraRendersConfig1x.screenshotAction.Enable();
 		}
 
 		private void EnsureScreenshotDirectoryExists()
@@ -148,7 +182,7 @@ namespace SpalatoBros.ScreenshotTool
 			rawScreenshotTex.name = GetFileName("Screenshot", Screen.width, Screen.height, superSize, string.Empty);
 			OnRawScreenshotAsTextureTaken?.Invoke(rawScreenshotTex);
 
-			screenshotTex = new(rawScreenshotTex.width, rawScreenshotTex.height, TextureFormat.RGB24, false);
+			screenshotTex = new(rawScreenshotTex.width, rawScreenshotTex.height, TextureFormat.RGBA32, false);
 			screenshotTex.SetPixels32(rawScreenshotTex.GetPixels32());
 
 			if (compressScreenshotAsTexture)
@@ -163,43 +197,41 @@ namespace SpalatoBros.ScreenshotTool
 		public async void SaveScreenshotAsTextureToFile(string fileExtension)
 		{
 			if (!screenshotTex) return;
-			if (savingScreenshotAsTexture) return;
-			savingScreenshotAsTexture = true;
+			if (isSaving) return;
+			isSaving = true;
 
 			string fullPath = Path.Combine(screenshotsPath, screenshotTex.name + $".{fileExtension}");
 
-			byte[] bytes;
-
-			switch (fileExtension)
-			{
-				case "png": bytes = screenshotTex.EncodeToPNG(); break;
-				case "jpg": bytes = screenshotTex.EncodeToJPG(); break;
-				case "tga":	bytes = screenshotTex.EncodeToTGA(); break;
-				case "exr":	bytes = screenshotTex.EncodeToEXR(); break;
-				default: bytes = screenshotTex.EncodeToPNG(); break;
-			}
-
-			using FileStream fs = new(fullPath, FileMode.Create, FileAccess.Write, FileShare.None, 4096, useAsync: true);
-
-			try
-			{
-				await fs.WriteAsync(bytes, 0, bytes.Length);
-				Debug.Log($"Screenshot file saved: {fullPath}");
-				OnScreenshotAsTextureSaved?.Invoke(screenshotTex.name);
-			}
-			catch (Exception e)
-			{
-				Debug.LogException(e);
-				OnSaveScreenshotAsTextureError?.Invoke(e);
-			}
-			finally
-			{
-				savingScreenshotAsTexture = false;
-			}
+			await SaveToFile(screenshotTex, fullPath, fileExtension, OnScreenshotAsTextureSaved);
 		}
 		#endregion
 
 		#region Render camera events
+		private void RenderIndividualCamera1xPerformed(InputAction.CallbackContext context)
+		{
+			RenderAllCameras();
+		}
+
+		private void RenderIndividualCameraFullHDPerformed(InputAction.CallbackContext context)
+		{
+			RenderAllCamerasAtFullHD();
+		}
+
+		private void RenderIndividualCameraUltraHDPerformed(InputAction.CallbackContext context)
+		{
+			RenderAllCamerasAtUltraHD();
+		}
+
+		private void RenderIndividualCameraCustomPerformed(InputAction.CallbackContext context)
+		{
+			RenderAllCamerasAtCustomResolution();
+		}
+
+		private void SaveCameraRenders1xPerformed(InputAction.CallbackContext context)
+		{
+			SaveCameraRendersToFile("png");
+		}
+
 		public void AddCamera(Camera newCam)
 		{
 			if (cameraList.Contains(newCam)) return;
@@ -221,6 +253,163 @@ namespace SpalatoBros.ScreenshotTool
 				if (cameraList[i]) continue;
 				cameraList.RemoveAt(i);
 			}
+		}
+
+		[ContextMenu("Render All Cameras")]
+		public void RenderAllCameras()
+		{
+			StartCoroutine(RenderCameras());
+		}
+
+		private IEnumerator RenderCameras()
+		{
+			ClearAllRenders();
+
+			yield return new WaitForEndOfFrame();
+
+			UpdateCameraList();
+
+			for (int i = 0; i < cameraList.Count; i++)
+				RenderCameraAtOwnResolution(cameraList[i]);
+
+			OnCamerasRenderedToTexture?.Invoke(renderedCameraTextures);
+		}
+
+		public void RenderAllCamerasAtFullHD()
+		{
+			StartCoroutine(RenderCamerasFullHD());
+		}
+
+		private IEnumerator RenderCamerasFullHD()
+		{
+			ClearAllRenders();
+
+			yield return new WaitForEndOfFrame();
+
+			UpdateCameraList();
+
+			for (int i = 0; i < cameraList.Count; i++)
+				RenderCamera(cameraList[i], 1920, 1080);
+
+			OnCamerasRenderedToTexture?.Invoke(renderedCameraTextures);
+		}
+
+		public void RenderAllCamerasAtUltraHD()
+		{
+			StartCoroutine(RenderCamerasUltraHD());
+		}
+
+		private IEnumerator RenderCamerasUltraHD()
+		{
+			ClearAllRenders();
+
+			yield return new WaitForEndOfFrame();
+
+			UpdateCameraList();
+
+			for (int i = 0; i < cameraList.Count; i++)
+				RenderCamera(cameraList[i], 3840, 2160);
+
+			OnCamerasRenderedToTexture?.Invoke(renderedCameraTextures);
+		}
+
+		public void RenderAllCamerasAtCustomResolution()
+		{
+			StartCoroutine(RenderCamerasCustomResolution());
+		}
+
+		private IEnumerator RenderCamerasCustomResolution()
+		{
+			ClearAllRenders();
+
+			yield return new WaitForEndOfFrame();
+
+			UpdateCameraList();
+
+			for (int i = 0; i < cameraList.Count; i++)
+				RenderCamera(cameraList[i], customCameraResolution.x, customCameraResolution.y);
+
+			OnCamerasRenderedToTexture?.Invoke(renderedCameraTextures);
+		}
+
+		private void ClearAllRenders()
+		{
+			for (int i = 0; i < renderedCameraTextures.Count; i++)
+			{
+				if (!renderedCameraTextures[i]) continue;
+				Destroy(renderedCameraTextures[i]);
+			}
+
+			if (renderedCameraTextures.Count > 0)
+				renderedCameraTextures.Clear();
+		}
+
+		private void RenderCameraAtOwnResolution(Camera cam)
+		{
+			int width = cam.scaledPixelWidth;
+			int height = cam.scaledPixelHeight;
+
+			RenderCamera(cam, width, height);
+		}
+
+		public void RenderCamera(Camera cam, int width, int height)
+		{
+			RenderTexture originalRT = cam.targetTexture;
+			Rect originalRect = cam.rect;
+
+			RenderTexture rt = new(width, height, 24, defaultRenderTextureFormat);
+			rt.Create();
+
+			// Normalize so it fills the RT
+			cam.rect = new Rect(0f, 0f, 1f, 1f);
+			cam.targetTexture = rt;
+
+			cam.Render();
+
+			RenderTexture currentRT = RenderTexture.active;
+			RenderTexture.active = rt;
+
+			Texture2D tex = new(width, height, defaultTextureFormat, linearTexture);
+			tex.ReadPixels(new Rect(0, 0, width, height), 0, 0);
+			tex.Apply();
+
+			tex.name = $"Camera_Render_{cam.transform.name}_{GetFileName(string.Empty, width, height, 1)}";
+
+			if (!renderedCameraTextures.Contains(tex))
+				renderedCameraTextures.Add(tex);
+
+			// Restore
+			RenderTexture.active = currentRT;
+			cam.targetTexture = originalRT;
+			cam.rect = originalRect;
+
+			Destroy(rt);
+		}
+
+		public async void SaveCameraRendersToFile(string fileExtension = "png")
+		{
+			if (isSaving) return;
+			isSaving = true;
+
+			for (int i = 0; i < renderedCameraTextures.Count; i++)
+			{
+				if (!renderedCameraTextures[i]) continue;
+				
+				if (!renderedCameraTextures[i].isReadable)
+				{
+					Debug.LogWarning($"Rendered camera texture: {renderedCameraTextures[i].name} ({i}) is nor readable, skipping save.");
+					continue;
+				}
+
+				if (renderedCameraTextures[i].name.EndsWith($".{fileExtension}"))
+					renderedCameraTextures[i].name = renderedCameraTextures[i].name.Substring(0, renderedCameraTextures[i].name.Length - 4);
+
+				string fullPath = Path.Combine(screenshotsPath, renderedCameraTextures[i].name + $".{fileExtension}");
+
+				await SaveToFile(renderedCameraTextures[i], fullPath, fileExtension, null);
+			}
+
+			isSaving = false;
 		}
 		#endregion
 
@@ -251,13 +440,41 @@ namespace SpalatoBros.ScreenshotTool
 		#endregion
 
 		#region Helper Methods
-		public string GetFileName(string prefix, int width, int height, int superSize, string extension = "png")
+		public string GetFileName(string prefix, int width, int height, int superSize, string fileExtension = "png")
 		{
-			if (string.IsNullOrEmpty(extension))
+			if (string.IsNullOrEmpty(fileExtension))
 				return $"{prefix}_{width * superSize}x{height * superSize}_{DateTime.Now:dd-MM-yyy_HH-mm-ss-fff}";
 
-			return $"{prefix}_{width * superSize}x{height * superSize}_{DateTime.Now:dd-MM-yyy_HH-mm-ss-fff}.{extension}";
-		}	
+			return $"{prefix}_{width * superSize}x{height * superSize}_{DateTime.Now:dd-MM-yyy_HH-mm-ss-fff}.{fileExtension}";
+		}
+
+		public async Task SaveToFile(Texture2D tex, string fullPath, string fileExtension, Action<string> callback = null)
+		{
+			byte[] bytes;
+
+			switch (fileExtension)
+			{
+				case "png": bytes = tex.EncodeToPNG(); break;
+				case "jpg": bytes = tex.EncodeToJPG(); break;
+				case "tga": bytes = tex.EncodeToTGA(); break;
+				case "exr": bytes = tex.EncodeToEXR(); break;
+				default: bytes = tex.EncodeToPNG(); break;
+			}
+
+			using FileStream fs = new(fullPath, FileMode.Create, FileAccess.Write, FileShare.None, 4096, useAsync: true);
+
+			try
+			{
+				await fs.WriteAsync(bytes, 0, bytes.Length);
+				Debug.Log($"Screenshot file saved: {fullPath}");
+				callback?.Invoke(tex.name);
+			}
+			catch (Exception e)
+			{
+				Debug.LogException(e);
+				OnSaveScreenshotAsTextureError?.Invoke(e);
+			}
+		}
 		#endregion
 	}
 
